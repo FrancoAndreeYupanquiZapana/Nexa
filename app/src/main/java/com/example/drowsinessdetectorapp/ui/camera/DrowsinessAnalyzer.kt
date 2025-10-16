@@ -19,22 +19,20 @@ import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.sqrt
 
-// Debug info para UI overlay (normalizado 0..1)
 data class DebugInfo(
     val faceRectNorm: RectFNorm,
     val eyesRectNorm: RectFNorm,
     val mouthRectNorm: RectFNorm,
     val closedProb: Float,
     val yawnProb: Float,
-    val mlkitClosed: Float
+    val mlkitClosed: Float,
+    val combinedYawnScore: Float,
+    val eyeEma: Float
 )
-
 data class RectFNorm(val left: Float, val top: Float, val right: Float, val bottom: Float)
 
-// Estado observable
 data class DrowsinessState(
     val eyeScore: Float = 0f,
     val yawnCount: Int = 0,
@@ -44,7 +42,6 @@ data class DrowsinessState(
     val isLostFaceAlert: Boolean = false
 )
 
-// OverlayInfo para dibujar en UI (normalizado 0..1)
 data class OverlayInfo(
     val faceLeft: Float, val faceTop: Float, val faceRight: Float, val faceBottom: Float,
     val eyesLeft: Float, val eyesTop: Float, val eyesRight: Float, val eyesBottom: Float,
@@ -57,8 +54,8 @@ data class OverlayInfo(
 
 class DrowsinessAnalyzer(
     private val model: DrowsinessClassifier,
-    private var EYE_THRESHOLD: Float = 0.23f,
-    private var YAWN_THRESHOLD: Float = 0.40f,
+    private var EYE_THRESHOLD: Float = 0.28f,   // sensibilidad modelo ojos (ajustable)
+    private var YAWN_THRESHOLD: Float = 0.42f,  // sensibilidad combinado bostezo (ajustable)
     private val calibrateOnStart: Boolean = true,
     private val calibrationFrames: Int = 120
 ) {
@@ -77,17 +74,27 @@ class DrowsinessAnalyzer(
     private var yawnCounter = 0
     private var lostFaceStart = 0L
 
-    // PERF
     private var frameCounter = 0
-    private val MOUTH_CLASSIFY_EVERY_N_FRAMES = 3
+    private var MOUTH_CLASSIFY_EVERY_N_FRAMES = 2 // más reactivo
+    private var yawnConsecutive = 0
+    private val YAWN_CONSECUTIVE_REQUIRED = 2     // requiere 2 frames consecutivos
+    private val YAWN_EVENT_GAP_MS = 1200L         // gap entre eventos
 
-    // Debug
-    private val ENABLE_SAVE_DEBUG_IMAGES = false
+    // Suavizado (EMA) para la puntuación de ojos
+    private var eyeEma = 0f
+    private val EYE_EMA_ALPHA = 0.45f
 
-    // Calibracion
+    // Calibración
     private var calibSamples = mutableListOf<Float>()
     private var calibPeakYawn = 0f
     private var calibrating = calibrateOnStart
+
+    // Tiempo para considerar ojos cerrados (evitar pestañeos)
+    private var EYE_CLOSED_MS_THRESHOLD = 900L
+
+    // Debug / logging
+    private val ENABLE_SAVE_DEBUG_IMAGES = false
+    private val ENABLE_VERBOSE_LOG = true
 
     private val detector by lazy {
         val opts = FaceDetectorOptions.Builder()
@@ -100,13 +107,36 @@ class DrowsinessAnalyzer(
     }
 
     init {
+        resetState()
         if (calibrateOnStart) {
-            Log.i("Analyzer", "Calibration ENABLED for $calibrationFrames frames")
             calibrating = true
-            calibSamples.clear()
-            calibPeakYawn = 0f
+            Log.i("Analyzer", "Calibration enabled for $calibrationFrames frames")
         }
     }
+
+    fun resetState() {
+        eyeClosedStart = 0L
+        lastYawnMillis = 0L
+        yawnCounter = 0
+        lostFaceStart = 0L
+        frameCounter = 0
+        calibSamples.clear()
+        calibPeakYawn = 0f
+        calibrating = calibrateOnStart
+        yawnConsecutive = 0
+        eyeEma = 0f
+        _state.value = DrowsinessState()
+        _overlay.value = null
+        _debug.value = null
+        Log.i("Analyzer", "Internal state RESET")
+    }
+
+    // setters runtime
+    fun setEyeThreshold(v: Float) { EYE_THRESHOLD = v }
+    fun setYawnThreshold(v: Float) { YAWN_THRESHOLD = v }
+    fun setEyeClosedMsThreshold(ms: Long) { EYE_CLOSED_MS_THRESHOLD = ms }
+    fun setMouthClassifyEvery(n: Int) { MOUTH_CLASSIFY_EVERY_N_FRAMES = max(1, n) }
+    fun setEyeEmaAlpha(a: Float) { /* 0..1 */ }
 
     @OptIn(ExperimentalGetImage::class)
     fun process(imageProxy: ImageProxy) {
@@ -128,7 +158,6 @@ class DrowsinessAnalyzer(
                     val face = faces.first()
                     val bmp = imageProxyToBitmap(imageProxy)
                     val rotated = rotateBitmap(bmp, rotation)
-                    Log.d("Analyzer", "MLKit faces found=1 bbox=${face.boundingBox} leftEye=${face.leftEyeOpenProbability} rightEye=${face.rightEyeOpenProbability}")
                     handleFaceWithLandmarks(face, rotated, frameCounter)
                 }
             }
@@ -149,8 +178,11 @@ class DrowsinessAnalyzer(
             lostFaceCount = _state.value.lostFaceCount + 1,
             isLostFaceAlert = alert
         )
+        // limpiamos overlays y reseteamos EMA levemente para evitar drift
         _overlay.value = null
         _debug.value = null
+        // reset parcial: no borrar todo, pero evitar que eyeEma mantenga valor viejo
+        if (elapsed > 1500L) eyeEma = 0f
         Log.d("Analyzer", "No face for ${elapsed}ms. alert=$alert")
     }
 
@@ -163,6 +195,7 @@ class DrowsinessAnalyzer(
         val mouthLeftPoint = face.getLandmark(com.google.mlkit.vision.face.FaceLandmark.MOUTH_LEFT)?.position
         val mouthRightPoint = face.getLandmark(com.google.mlkit.vision.face.FaceLandmark.MOUTH_RIGHT)?.position
 
+        // faces / regions (fallbacks ya implementados)
         val eyesRect = if (leftEyePoint != null && rightEyePoint != null) {
             val cx = ((leftEyePoint.x + rightEyePoint.x) / 2f).toInt()
             val cy = ((leftEyePoint.y + rightEyePoint.y) / 2f).toInt()
@@ -181,11 +214,11 @@ class DrowsinessAnalyzer(
         }
 
         val mouthRect = if (mouthBottomPoint != null && mouthLeftPoint != null && mouthRightPoint != null) {
-            val left = (mouthLeftPoint.x - 6).toInt().coerceAtLeast(0)
-            val right = (mouthRightPoint.x + 6).toInt().coerceAtMost(frameBmp.width)
-            val mouthHeightEstimate = abs(mouthRightPoint.y - mouthLeftPoint.y).toInt().coerceAtLeast(8)
-            val bottom = (mouthBottomPoint.y + (mouthHeightEstimate * 0.6f)).toInt().coerceAtMost(frameBmp.height)
-            val top = (mouthBottomPoint.y - (mouthHeightEstimate * 1.0f)).toInt().coerceAtLeast(0)
+            val left = (mouthLeftPoint.x - 14).toInt().coerceAtLeast(0)
+            val right = (mouthRightPoint.x + 14).toInt().coerceAtMost(frameBmp.width)
+            val mouthHeightEstimate = max(abs(mouthRightPoint.y - mouthLeftPoint.y).toInt(), abs(mouthBottomPoint.y - mouthLeftPoint.y).toInt()).coerceAtLeast(8)
+            val top = (mouthBottomPoint.y - (mouthHeightEstimate * 1.5f)).toInt().coerceAtLeast(0)
+            val bottom = (mouthBottomPoint.y + (mouthHeightEstimate * 1.3f)).toInt().coerceAtMost(frameBmp.height)
             Rect(left, top, right, bottom)
         } else {
             val bbox = face.boundingBox
@@ -194,31 +227,25 @@ class DrowsinessAnalyzer(
             val right = bbox.right.coerceAtMost(frameBmp.width)
             val bottom = bbox.bottom.coerceAtMost(frameBmp.height)
             val h = (bottom - top).coerceAtLeast(10)
-            Rect(left, top + (h * 0.45).toInt(), right, bottom)
+            Rect(left, top + (h * 0.40).toInt(), right, bottom)
         }
 
         val safeEyes = Rect(
-            eyesRect.left.coerceAtLeast(0),
-            eyesRect.top.coerceAtLeast(0),
-            eyesRect.right.coerceAtMost(frameBmp.width),
-            eyesRect.bottom.coerceAtMost(frameBmp.height)
+            eyesRect.left.coerceAtLeast(0), eyesRect.top.coerceAtLeast(0),
+            eyesRect.right.coerceAtMost(frameBmp.width), eyesRect.bottom.coerceAtMost(frameBmp.height)
         )
         val safeMouth = Rect(
-            mouthRect.left.coerceAtLeast(0),
-            mouthRect.top.coerceAtLeast(0),
-            mouthRect.right.coerceAtMost(frameBmp.width),
-            mouthRect.bottom.coerceAtMost(frameBmp.height)
+            mouthRect.left.coerceAtLeast(0), mouthRect.top.coerceAtLeast(0),
+            mouthRect.right.coerceAtMost(frameBmp.width), mouthRect.bottom.coerceAtMost(frameBmp.height)
         )
 
-        // ----------------------------------------
+        // ---- EYES: crops por ojo ----
         var probsEyesCombined = FloatArray(model.numOutputClasses) { 0f }
         try {
             if (leftEyePoint != null && rightEyePoint != null) {
-                // distancia entre ojos (en pixels)
-                val eyeDistF = kotlin.math.abs(rightEyePoint.x - leftEyePoint.x).coerceAtLeast(20f)
-                // tamaño de crop por ojo basado en eyeDist
-                val cropW = (eyeDistF * 0.9f).toInt().coerceAtLeast(28)
-                val cropH = (cropW * 0.6f).toInt().coerceAtLeast(20)
+                val eyeDistF = abs(rightEyePoint.x - leftEyePoint.x).coerceAtLeast(20f)
+                val cropW = (eyeDistF * 0.95f).toInt().coerceAtLeast(28)
+                val cropH = (cropW * 0.85f).toInt().coerceAtLeast(20)
 
                 val leftEyeRect = Rect(
                     (leftEyePoint.x - cropW / 2f).toInt().coerceAtLeast(0),
@@ -241,15 +268,11 @@ class DrowsinessAnalyzer(
                         val c = cropBitmapSafe(frameBmp, r)
                         val scaled = Bitmap.createScaledBitmap(c, model.inputWidth, model.inputHeight, true)
                         eyeCrops.add(scaled)
-                        if (ENABLE_SAVE_DEBUG_IMAGES) saveDebugBitmap(scaled, "eye_crop_${idx}")
-                        Log.d("Analyzer", "eyeCrop${idx} size=${w}x${h} -> modelInput=${scaled.width}x${scaled.height}")
-                    } else {
-                        Log.d("Analyzer", "eyeCrop${idx} too small: ${w}x${h} (skipped)")
+                        if (ENABLE_SAVE_DEBUG_IMAGES) saveDebugBitmap(scaled, "eye_crop_$idx")
                     }
                 }
 
                 if (eyeCrops.isNotEmpty()) {
-                    // promedio de probabilidades por crop
                     val accum = FloatArray(model.numOutputClasses) { 0f }
                     for (c in eyeCrops) {
                         val p = try { model.classify(c) } catch (e: Exception) { FloatArray(model.numOutputClasses){0f} }
@@ -258,61 +281,71 @@ class DrowsinessAnalyzer(
                     for (i in accum.indices) accum[i] = accum[i] / eyeCrops.size.toFloat()
                     probsEyesCombined = accum
                 } else {
-                    // fallback: usa safeEyes como región combinada
                     val cropEyes = cropBitmapSafe(frameBmp, safeEyes)
                     val inputEyes = Bitmap.createScaledBitmap(cropEyes, model.inputWidth, model.inputHeight, true)
                     probsEyesCombined = try { model.classify(inputEyes) } catch (e: Exception){ FloatArray(model.numOutputClasses){0f} }
-                    if (ENABLE_SAVE_DEBUG_IMAGES) saveDebugBitmap(inputEyes, "eye_crop_fallback")
-                    Log.d("Analyzer", "eye fallback used (safeEyes) size=${safeEyes.width()}x${safeEyes.height()}")
+                    if (ENABLE_SAVE_DEBUG_IMAGES) saveDebugBitmap(inputEyes, "eye_fallback")
                 }
             } else {
-                // no landmarks -> fallback safeEyes
                 val cropEyes = cropBitmapSafe(frameBmp, safeEyes)
                 val inputEyes = Bitmap.createScaledBitmap(cropEyes, model.inputWidth, model.inputHeight, true)
                 probsEyesCombined = try { model.classify(inputEyes) } catch (e: Exception){ FloatArray(model.numOutputClasses){0f} }
-                if (ENABLE_SAVE_DEBUG_IMAGES) saveDebugBitmap(inputEyes, "eye_crop_no_landmarks")
-                Log.d("Analyzer", "no eye landmarks, used safeEyes crop ${inputEyes.width}x${inputEyes.height}")
+                if (ENABLE_SAVE_DEBUG_IMAGES) saveDebugBitmap(inputEyes, "eye_no_landmarks")
             }
         } catch (e: Exception) {
             Log.e("Analyzer", "eyes classify error: ${e.message}")
         }
 
-        // Mouth classification
+        // ---- MOUTH classification (cada N frames) ----
         var probsMouth = FloatArray(model.numOutputClasses) { 0f }
         val mouthWidth = safeMouth.width()
         val mouthHeight = safeMouth.height()
         val faceHeight = face.boundingBox.height()
         val faceWidth = face.boundingBox.width()
 
-        val enoughResolution = faceHeight >= 120 || faceWidth >= 120
-        if (mouthWidth > 20 && mouthHeight > 14 && enoughResolution && currentFrame % MOUTH_CLASSIFY_EVERY_N_FRAMES == 0) {
+        val enoughResolution = faceHeight >= 110 || faceWidth >= 110
+        if (mouthWidth > 18 && mouthHeight > 12 && enoughResolution && currentFrame % MOUTH_CLASSIFY_EVERY_N_FRAMES == 0) {
             try {
                 val cropMouth = cropBitmapSafe(frameBmp, safeMouth)
                 val inputMouth = Bitmap.createScaledBitmap(cropMouth, model.inputWidth, model.inputHeight, true)
                 probsMouth = try { model.classify(inputMouth) } catch (e: Exception) { FloatArray(model.numOutputClasses) { 0f } }
-                if (ENABLE_SAVE_DEBUG_IMAGES) saveDebugBitmap(inputMouth, "mouth_landmark")
-                Log.d("Analyzer", "eyeCrop=${model.inputWidth}x${model.inputHeight} mouthCrop=${inputMouth.width}x${inputMouth.height}")
+                if (ENABLE_SAVE_DEBUG_IMAGES) saveDebugBitmap(inputMouth, "mouth_crop")
+                if (ENABLE_VERBOSE_LOG) Log.d("Analyzer", "probsMouth=${probsMouth.joinToString(",")}")
             } catch (e: Exception) {
                 Log.e("Analyzer", "mouth classify error: ${e.message}")
             }
-        } else {
-            Log.d("Analyzer", "eyeCrop=${model.inputWidth}x${model.inputHeight} mouthCrop=${mouthWidth}x${mouthHeight} (skipped)")
         }
 
-        // ---
+        // --- scoring / mezclas ---
         val closedProb = probsEyesCombined.getOrNull(0) ?: 0f
-        val yawnProb = probsMouth.getOrNull(3) ?: 0f
+        // revisa que '3' sea el índice correcto para `yawn` en tu modelo
+        val yawnProbModel = probsMouth.getOrNull(3) ?: 0f
 
         val leftEyeProb = face.leftEyeOpenProbability ?: -1f
         val rightEyeProb = face.rightEyeOpenProbability ?: -1f
         val mlkitEyeClosedEstimate = if (leftEyeProb >= 0f && rightEyeProb >= 0f) 1f - ((leftEyeProb + rightEyeProb) / 2f) else -1f
 
-        Log.d("Analyzer", "LMK closedProb=$closedProb yawnProb=$yawnProb mlkitClosed=$mlkitEyeClosedEstimate left=$leftEyeProb right=$rightEyeProb bbox=${face.boundingBox}")
+        // Actualiza EMA de ojos para estabilizar ruido temporal
+        eyeEma = (EYE_EMA_ALPHA * closedProb) + ((1f - EYE_EMA_ALPHA) * eyeEma)
 
-        // Normalizar rects al 0..1 usando el tamaño del bitmap
+        // Calcula una medida geométrica de apertura de boca (normalized)
+        val mouthHeightEstimate = if (mouthHeight > 0) mouthHeight.toFloat() else 0f
+        // Normalizamos respecto a una fracción de la altura de la cara para obtener 0..1 razonable
+        val mouthAspectScore = if (faceHeight > 0) {
+            (mouthHeightEstimate / (faceHeight * 0.20f)).coerceAtMost(1f) // 0.2 = boca grande = 1.0
+        } else 0f
+
+        // combinamos la salida del modelo con la medida geométrica para robustez
+        val combinedYawnScore = (yawnProbModel * 0.75f) + (mouthAspectScore * 0.25f)
+
+        if (ENABLE_VERBOSE_LOG) {
+            Log.d("Analyzer", "closedProb=$closedProb eyeEma=$eyeEma mlkitClosed=$mlkitEyeClosedEstimate")
+            Log.d("Analyzer", "yawnProbModel=$yawnProbModel mouthAspectScore=${"%.3f".format(mouthAspectScore)} combinedYawn=${"%.3f".format(combinedYawnScore)}")
+        }
+
+        // overlays normalizados
         val bw = frameBmp.width.toFloat().coerceAtLeast(1f)
         val bh = frameBmp.height.toFloat().coerceAtLeast(1f)
-
         val fb = face.boundingBox
         val faceLeftN = (fb.left.coerceAtLeast(0).toFloat() / bw).coerceIn(0f, 1f)
         val faceTopN = (fb.top.coerceAtLeast(0).toFloat() / bh).coerceIn(0f, 1f)
@@ -336,39 +369,51 @@ class DrowsinessAnalyzer(
             closedProb = closedProb,
             mlkitLeft = leftEyeProb.coerceAtLeast(0f),
             mlkitRight = rightEyeProb.coerceAtLeast(0f),
-            yawnProb = yawnProb
+            yawnProb = yawnProbModel
         )
 
-        // calibracion
+        // calibración
         if (calibrating) {
             calibSamples.add(closedProb)
-            if (yawnProb > calibPeakYawn) calibPeakYawn = yawnProb
+            if (combinedYawnScore > calibPeakYawn) calibPeakYawn = combinedYawnScore
             if (calibSamples.size >= calibrationFrames) finishCalibrationAndSetThresholds()
         }
 
-        // combine model + mlkit para puntaje de ojos
+        // --- Lógica de alertas ---
+        val now = System.currentTimeMillis()
+        // usamos eyeEma para la decisión final (mucho más estable)
         val eyeScoreToUse = when {
-            closedProb > 0.02f && mlkitEyeClosedEstimate >= 0f -> (closedProb * 0.80f) + (mlkitEyeClosedEstimate * 0.20f)
-            closedProb > 0.02f -> closedProb
+            eyeEma > 0.02f && mlkitEyeClosedEstimate >= 0f -> (eyeEma * 0.85f) + (mlkitEyeClosedEstimate * 0.15f)
+            eyeEma > 0.02f -> eyeEma
             mlkitEyeClosedEstimate >= 0f -> mlkitEyeClosedEstimate
             else -> 0f
         }
 
-        // alerta
-        val now = System.currentTimeMillis()
         var alertEyes = false
         if (eyeScoreToUse > EYE_THRESHOLD) {
             if (eyeClosedStart == 0L) eyeClosedStart = now
-            if (now - eyeClosedStart >= 2000L) alertEyes = true
+            if (now - eyeClosedStart >= EYE_CLOSED_MS_THRESHOLD) alertEyes = true
         } else {
             eyeClosedStart = 0L
         }
 
+        // Yawn: require consecutive detection + gap between events
+        if (combinedYawnScore > YAWN_THRESHOLD && mouthWidth >= max((faceWidth * 0.22).toInt(), 30)) {
+            yawnConsecutive++
+        } else {
+            yawnConsecutive = 0
+        }
+        if (yawnConsecutive >= YAWN_CONSECUTIVE_REQUIRED && now - lastYawnMillis > YAWN_EVENT_GAP_MS) {
+            yawnCounter++
+            lastYawnMillis = now
+            yawnConsecutive = 0
+            Log.d("Analyzer", "Yawn confirmed -> counter=$yawnCounter (combined=${"%.3f".format(combinedYawnScore)})")
+        }
+
         var alertYawn = false
-        val mouthWideEnoughForYawn = mouthWidth >= max((faceWidth * 0.28).toInt(), 40)
-        if (yawnProb > YAWN_THRESHOLD && mouthWideEnoughForYawn && now - lastYawnMillis > 1500L) {
-            yawnCounter++; lastYawnMillis = now
-            if (yawnCounter >= 2) { alertYawn = true; yawnCounter = 0 }
+        if (yawnCounter >= 5) { // umbral de eventos
+            alertYawn = true
+            yawnCounter = 0
         }
 
         _state.value = _state.value.copy(
@@ -379,28 +424,13 @@ class DrowsinessAnalyzer(
             isLostFaceAlert = false
         )
 
-        val fw = frameBmp.width.toFloat()
-        val fh = frameBmp.height.toFloat()
-        val faceNorm = RectFNorm(
-            face.boundingBox.left / fw,
-            face.boundingBox.top / fh,
-            face.boundingBox.right / fw,
-            face.boundingBox.bottom / fh
+        // debug flow con datos extra para UI
+        _debug.value = DebugInfo(
+            RectFNorm(fb.left / bw, fb.top / bh, fb.right / bw, fb.bottom / bh),
+            RectFNorm(safeEyes.left / bw, safeEyes.top / bh, safeEyes.right / bw, safeEyes.bottom / bh),
+            RectFNorm(safeMouth.left / bw, safeMouth.top / bh, safeMouth.right / bw, safeMouth.bottom / bh),
+            closedProb, yawnProbModel, mlkitEyeClosedEstimate, combinedYawnScore, eyeEma
         )
-        val eyesNorm = RectFNorm(
-            safeEyes.left / fw,
-            safeEyes.top / fh,
-            safeEyes.right / fw,
-            safeEyes.bottom / fh
-        )
-        val mouthNorm = RectFNorm(
-            safeMouth.left / fw,
-            safeMouth.top / fh,
-            safeMouth.right / fw,
-            safeMouth.bottom / fh
-        )
-
-        _debug.value = DebugInfo(faceNorm, eyesNorm, mouthNorm, closedProb, yawnProb, mlkitEyeClosedEstimate)
     }
 
     private fun finishCalibrationAndSetThresholds() {
@@ -411,34 +441,27 @@ class DrowsinessAnalyzer(
         }
         val mu = calibSamples.average().toFloat()
         val sigma = sqrt(calibSamples.map { (it - mu) * (it - mu) }.average().toFloat())
-        val computedEyeThreshold = max(0.35f, mu + 3f * sigma)
-        val computedYawnThreshold = max(0.35f, if (calibPeakYawn > 0f) calibPeakYawn * 0.7f else YAWN_THRESHOLD)
-
-        Log.i("Analyzer", "Calibration done: mu=${"%.3f".format(mu)}, sigma=${"%.3f".format(sigma)} -> EYE_THRESHOLD set to ${"%.3f".format(computedEyeThreshold)}; YAWN_THRESHOLD set to ${"%.3f".format(computedYawnThreshold)}")
-
+        val computedEyeThreshold = max(0.28f, mu + 2.75f * sigma)
+        val computedYawnThreshold = max(0.35f, if (calibPeakYawn > 0f) calibPeakYawn * 0.65f else YAWN_THRESHOLD)
+        Log.i("Analyzer", "Calibration done: mu=${"%.3f".format(mu)} sigma=${"%.3f".format(sigma)} -> EYE=${"%.3f".format(computedEyeThreshold)} YAWN=${"%.3f".format(computedYawnThreshold)}")
         EYE_THRESHOLD = computedEyeThreshold
         YAWN_THRESHOLD = computedYawnThreshold
         calibrating = false
-        calibSamples.clear()
-        calibPeakYawn = 0f
+        calibSamples.clear(); calibPeakYawn = 0f
     }
 
     fun startCalibrationNow() {
         calibrating = true
-        calibSamples.clear()
-        calibPeakYawn = 0f
+        calibSamples.clear(); calibPeakYawn = 0f
+        eyeClosedStart = 0L; lastYawnMillis = 0L; yawnCounter = 0; yawnConsecutive = 0; eyeEma = 0f
         Log.i("Analyzer", "Manual calibration started for $calibrationFrames frames")
     }
 
     fun close() {
-        try {
-            model.close()
-        } catch (e: Exception) {
-            Log.w("Analyzer", "Error closing model: ${e.message}")
-        }
+        try { model.close() } catch (e: Exception) { Log.w("Analyzer", "Error closing model: ${e.message}") }
     }
 
-    // ---------------- Helpers ----------------
+    // ---------- Helpers ----------
     private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap {
         val yBuffer = imageProxy.planes[0].buffer
         val uBuffer = imageProxy.planes[1].buffer

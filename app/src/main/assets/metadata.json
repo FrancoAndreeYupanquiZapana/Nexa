@@ -1,0 +1,1 @@
+{"input_size": [150, 150], "normalization": "0-1", "labels": ["Closed_eyes", "Neutral", "Open_eyes", "yawn"]}

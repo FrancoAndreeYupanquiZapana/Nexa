@@ -1,8 +1,6 @@
 package com.example.drowsinessdetectorapp.ui
 
 import android.content.Context
-import android.media.AudioManager
-import android.media.ToneGenerator
 import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
@@ -30,11 +28,10 @@ import com.example.drowsinessdetectorapp.ui.camera.CameraPreview
 import com.example.drowsinessdetectorapp.ui.camera.DebugInfo
 import com.example.drowsinessdetectorapp.ui.camera.DrowsinessAnalyzer
 import com.example.drowsinessdetectorapp.ui.camera.RectFNorm
-import kotlinx.coroutines.delay
-import androidx.compose.foundation.layout.*
+import com.example.drowsinessdetectorapp.ui.services.AlertSender
 import com.example.drowsinessdetectorapp.ui.settings.SoundConfig
 import com.example.drowsinessdetectorapp.ui.settings.playCustomOrDefaultTone
-
+import kotlinx.coroutines.delay
 
 @Composable
 fun MainScreen(viewModel: DrowsinessViewModel = viewModel()) {
@@ -48,7 +45,6 @@ fun MainScreen(viewModel: DrowsinessViewModel = viewModel()) {
 
     val state by analyzer.state.collectAsState()
     val debugInfo by analyzer.debug.collectAsState(initial = null)
-
     var currentAlert by remember { mutableStateOf<String?>(null) }
 
     // --- ALERTA AUTOMÁTICA ---
@@ -65,7 +61,7 @@ fun MainScreen(viewModel: DrowsinessViewModel = viewModel()) {
             val alertType = currentAlert!!
             delay(2000)
             if (currentAlert == alertType) {
-                playAlarmTone(ctx)
+                playAlarmTone(ctx, alertType)
                 notifySendExample(ctx, alertType)
                 currentAlert = null
             }
@@ -77,7 +73,7 @@ fun MainScreen(viewModel: DrowsinessViewModel = viewModel()) {
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .systemBarsPadding() // evita tapar la barra de estado o notch
+            .systemBarsPadding()
     ) {
         // Cámara
         CameraPreview(
@@ -226,17 +222,21 @@ fun OverlayDebugCanvas(debugInfo: DebugInfo?) {
     }
 }
 
-private fun playAlarmTone(context: Context) {
+// 🔔 ALARMA + MENSAJES AUTOMÁTICOS
+private fun playAlarmTone(context: Context, alertType: String) {
     try {
-//        val tone = ToneGenerator(AudioManager.STREAM_ALARM, 100)
-//        tone.startTone(ToneGenerator.TONE_CDMA_ABBR_ALERT, 1200)
+        // 🔊 Sonido personalizado o por defecto
         playCustomOrDefaultTone(context, SoundConfig.customSoundUri)
+
+        // 🚨 Enviar alerta automática (SMS + Telegram)
+        AlertSender.sendDrowsinessAlert(context, alertType)
+
     } catch (e: Exception) {
-        Log.w("MainScreen", "No se pudo reproducir el tono: ${e.message}")
+        Log.w("MainScreen", "Error al reproducir tono o enviar alerta: ${e.message}")
+        Toast.makeText(context, "No se pudo ejecutar la alerta", Toast.LENGTH_SHORT).show()
     }
 }
 
 private fun notifySendExample(context: Context, type: String) {
-    Toast.makeText(context, "Alerta Automática: $type (ejemplo)", Toast.LENGTH_LONG).show()
-    Log.i("MainScreen", "Alerta Automática enviada (ejemplo) tipo = $type")
+    Toast.makeText(context, "Alerta Automática: $type", Toast.LENGTH_LONG).show()
 }

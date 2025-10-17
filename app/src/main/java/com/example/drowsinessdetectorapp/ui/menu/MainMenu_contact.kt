@@ -1,5 +1,6 @@
 package com.example.drowsinessdetectorapp.ui.menu
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
@@ -25,18 +26,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavHostController
 import com.example.drowsinessdetectorapp.R
-import com.example.drowsinessdetectorapp.data.PreferencesManager
 import kotlinx.coroutines.launch
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
-//import androidx.compose.ui.text.input.KeyboardOptions
-
 
 @Composable
 fun MenuScreen(navController: NavHostController) {
     val context = LocalContext.current
-    val prefs = remember { PreferencesManager(context) }
-    val phoneFlow by prefs.phone.collectAsState(initial = null)
+    val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    var registeredNumber by remember { mutableStateOf(prefs.getString("emergency_number", "") ?: "") }
     var showModal by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -70,14 +68,24 @@ fun MenuScreen(navController: NavHostController) {
             RedButton(text = "Abrir cámara", onClick = { navController.navigate("camara") })
             Spacer(modifier = Modifier.height(24.dp))
 
-            RedButton(text = "WhatsApp", onClick = { showModal = true })
+            RedButton(text = "Número de Apoyo", onClick = { showModal = true })
             Spacer(modifier = Modifier.height(24.dp))
 
             RedButton(text = "Configuraciones", onClick = { navController.navigate("configuracion") })
         }
 
+        // --- Floating Button (opcional: enviar alerta manual) ---
         FloatingActionButton(
-            onClick = { /* Acción de alerta */ },
+            onClick = {
+                val savedNumber = prefs.getString("emergency_number", "") ?: ""
+
+                if (savedNumber.isBlank()) {
+                    Toast.makeText(context, "⚠️ No hay número registrado para contactar.", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "📞 Contactando con soporte...", Toast.LENGTH_SHORT).show()
+                    openWhatsApp(context, savedNumber)
+                }
+            },
             containerColor = Color.Red,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
@@ -86,13 +94,17 @@ fun MenuScreen(navController: NavHostController) {
             Text("A", color = Color.White, fontWeight = FontWeight.Bold)
         }
 
+
+        // --- Modal para número ---
         if (showModal) {
             NumberModal(
-                registeredNumber = phoneFlow ?: "",
+                registeredNumber = registeredNumber,
                 onClose = { showModal = false },
                 onAddNumber = { newNumber ->
                     scope.launch {
-                        prefs.savePhone(newNumber)
+                        prefs.edit().putString("emergency_number", newNumber).apply()
+                        registeredNumber = newNumber
+                        Toast.makeText(context, "✅ Número guardado correctamente", Toast.LENGTH_SHORT).show()
                     }
                     showModal = false
                 },
@@ -146,7 +158,7 @@ fun NumberModal(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Image(
-                        painter = painterResource(id = R.drawable.logo), // STICKER / AVATAR
+                        painter = painterResource(id = R.drawable.logo),
                         contentDescription = "Avatar",
                         modifier = Modifier
                             .size(80.dp)
@@ -162,7 +174,6 @@ fun NumberModal(
                         modifier = Modifier.align(Alignment.Start)
                     )
 
-                    // --- read-only field (registered) ---
                     OutlinedTextField(
                         value = registeredNumber,
                         onValueChange = {},
@@ -185,7 +196,6 @@ fun NumberModal(
                         modifier = Modifier.align(Alignment.Start)
                     )
 
-                    // --- editable field (new number) ---
                     OutlinedTextField(
                         value = newNumber,
                         onValueChange = { newNumber = it },
@@ -225,7 +235,6 @@ fun NumberModal(
                         ) {
                             Text("Agregar", color = Color.White)
                         }
-
                         Button(
                             onClick = {
                                 val toUse = when {
@@ -269,14 +278,30 @@ fun RedButton(text: String, onClick: () -> Unit) {
     }
 }
 
-fun openWhatsApp(context: android.content.Context, phoneNumber: String, message: String = "Hola....") {
+fun openWhatsApp(context: Context, phoneNumber: String) {
     try {
-        val number = phoneNumber.filter { !it.isWhitespace() }
-        val encodedMsg = URLEncoder.encode(message, StandardCharsets.UTF_8.toString())
-        val url = "https://api.whatsapp.com/send?phone=$number&text=$encodedMsg"
+        val number = phoneNumber.replace(" ", "").replace("-", "")
+        if (number.isBlank()) {
+            Toast.makeText(context, "Número no válido", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // ✅ Mensaje automático
+        val message = "Hola, soy Franco y quería contactarme con usted respecto a la app de somnolencia 🚗💤"
+        val encodedMessage = URLEncoder.encode(message, StandardCharsets.UTF_8.toString())
+
+        // ✅ Formatear el número (añadir +51 si no está)
+        val fullNumber = if (number.startsWith("+")) number else "+51$number"
+
+        // ✅ Usamos la URL oficial de WhatsApp API (sin setPackage)
+        val url = "https://api.whatsapp.com/send?phone=${fullNumber.replace("+", "")}&text=$encodedMessage"
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
         context.startActivity(intent)
+
     } catch (e: Exception) {
-        Toast.makeText(context, "No se pudo abrir WhatsApp: ${e.message}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "Error al abrir WhatsApp: ${e.message}", Toast.LENGTH_SHORT).show()
     }
 }
+
+
+

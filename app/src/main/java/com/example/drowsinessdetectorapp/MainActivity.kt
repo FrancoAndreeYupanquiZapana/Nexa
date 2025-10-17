@@ -6,6 +6,8 @@
 
 package com.example.drowsinessdetectorapp
 
+import android.Manifest
+import androidx.core.app.ActivityCompat
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -49,6 +51,11 @@ import com.example.drowsinessdetectorapp.ui.theme.Nexatheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.SEND_SMS),
+            100
+        )
         enableEdgeToEdge()
         setContent {
             Nexatheme {

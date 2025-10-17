@@ -92,7 +92,7 @@ class DrowsinessAnalyzer(
 
     // Eye EMA
     private var eyeEma = 0f
-    private val EYE_EMA_ALPHA = 0.45f
+    private val EYE_EMA_ALPHA = 0.38f
 
     // Mouth model EMA (evita que el valor desparezca a 0 cuando no inferimos cada frame)
     private var mouthModelEma = 0f
@@ -104,7 +104,7 @@ class DrowsinessAnalyzer(
 
     // --- Nuevas constantes para robustecer detección de bostezo ---
     // Requiere que el modelo y la geometría estén ambas por encima para contar un bostezo
-    private val MIN_YAWN_MODEL_THRESHOLD = 0.45f
+    private val MIN_YAWN_MODEL_THRESHOLD = 0.40f
     private val MIN_MOUTH_ASPECT_THRESHOLD = 0.40f
     // Si la salida cruda es muy pequeña, aceleramos el decay
     private val MIN_RAW_FOR_POSITIVE = 0.12f

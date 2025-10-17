@@ -40,6 +40,9 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.example.drowsinessdetectorapp.ui.menu.MenuScreen
+import com.example.drowsinessdetectorapp.ui.settings.SettingsScreen
+//import com.example.drowsinessdetectorapp.ui.menu.ModalContacto
 import com.example.drowsinessdetectorapp.ui.theme.Nexatheme
 
 
@@ -60,10 +63,10 @@ fun AppNavigator(){
     val navController= rememberNavController()
 
     NavHost(navController = navController, startDestination = "Bienvenido") {
-        composable("Bienvenido"){WelcomeScreen(navController)}
-        composable("menu"){MenuScreen(navController)}
-        composable ("camara"){ MainScreen()  }
-        //composable("contactos"){ContactScreen(prefs)}
+        composable("Bienvenido"){WelcomeScreen(navController)}      //bienvenida de abajo
+        composable("menu"){ MenuScreen(navController) }             //menu de opciones y whatsapp
+        composable ("camara"){ MainScreen()  }                      //camara principal
+        composable("configuracion") { SettingsScreen() }
         //composable("configuracion"){SettingsScreen(prefs)}
     }
 }
@@ -127,99 +130,6 @@ fun WelcomeScreen( navController: NavHostController){
     )
 }
 
-//pantalla de menus
-@Composable
-fun MenuScreen(navController: NavHostController) {
-    // Imagen de fondo
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black) // fallback
-    ) {
-        Image(
-            painter = painterResource(id = R.drawable.background_menu),
-            contentDescription = null,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop
-        )
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // Título
-            Text(
-                text = "Menu Principal",
-                color = Color.Red,
-                fontSize = 26.sp,
-                fontWeight = FontWeight.Bold,
-                fontStyle = FontStyle.Italic,
-                modifier = Modifier.padding(bottom = 32.dp)
-            )
-
-            // Botón 1 - Abrir cámara
-            RedButton(
-                text = "Abrir cámara",
-                onClick = { navController.navigate("camara") }
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Botón 2 - WhatsApp
-            RedButton(
-                text = "WhatsApp",
-                onClick = { /* abrir whatsapp */ }
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Botón 3 - Configuraciones
-            RedButton(
-                text = "Configuraciones",
-                onClick = { /* ir a configs */ }
-            )
-        }
-
-        // Botón flotante A (abajo a la derecha)
-        FloatingActionButton(
-            onClick = { /* Acción de alerta */ },
-            containerColor = Color.Red,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(24.dp)
-        ) {
-            Text(
-                "A",
-                color = Color.White,
-                fontWeight = FontWeight.Bold
-            )
-        }
-    }
-}
-
-@Composable
-fun RedButton(text: String, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = Color.Red,
-            contentColor = Color.White
-        ),
-        shape = RoundedCornerShape(50),
-        modifier = Modifier
-            .fillMaxWidth(0.7f)
-            .height(50.dp)
-    ) {
-        Text(
-            text,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold
-        )
-    }
-}
 @Preview(showBackground = true)
 @Composable
 fun GreetingPreview() {
@@ -227,3 +137,97 @@ fun GreetingPreview() {
         AppNavigator()
     }
 }
+
+//pantalla de menus
+//@Composable
+//fun MenuScreen(navController: NavHostController) {
+//    // Imagen de fondo
+//    Box(
+//        modifier = Modifier
+//            .fillMaxSize()
+//            .background(Color.Black) // fallback
+//    ) {
+//        Image(
+//            painter = painterResource(id = R.drawable.background_menu),
+//            contentDescription = null,
+//            modifier = Modifier.fillMaxSize(),
+//            contentScale = ContentScale.Crop
+//        )
+//
+//        Column(
+//            modifier = Modifier
+//                .fillMaxSize()
+//                .padding(24.dp),
+//            verticalArrangement = Arrangement.Center,
+//            horizontalAlignment = Alignment.CenterHorizontally
+//        ) {
+//            // Título
+//            Text(
+//                text = "Menu Principal",
+//                color = Color.Red,
+//                fontSize = 26.sp,
+//                fontWeight = FontWeight.Bold,
+//                fontStyle = FontStyle.Italic,
+//                modifier = Modifier.padding(bottom = 32.dp)
+//            )
+//
+//            // Botón 1 - Abrir cámara
+//            RedButton(
+//                text = "Abrir cámara",
+//                onClick = { navController.navigate("camara") }
+//            )
+//
+//            Spacer(modifier = Modifier.height(24.dp))
+//
+//            // Botón 2 - WhatsApp
+//            RedButton(
+//                text = "WhatsApp",
+//                onClick = { /* abrir whatsapp */ }
+//            )
+//
+//            Spacer(modifier = Modifier.height(24.dp))
+//
+//            // Botón 3 - Configuraciones
+//            RedButton(
+//                text = "Configuraciones",
+//                onClick = { /* ir a configs */ }
+//            )
+//        }
+//
+//        // Botón flotante A (abajo a la derecha)
+//        FloatingActionButton(
+//            onClick = { /* Acción de alerta */ },
+//            containerColor = Color.Red,
+//            modifier = Modifier
+//                .align(Alignment.BottomEnd)
+//                .padding(24.dp)
+//        ) {
+//            Text(
+//                "A",
+//                color = Color.White,
+//                fontWeight = FontWeight.Bold
+//            )
+//        }
+//    }
+//}
+//
+//@Composable
+//fun RedButton(text: String, onClick: () -> Unit) {
+//    Button(
+//        onClick = onClick,
+//        colors = ButtonDefaults.buttonColors(
+//            containerColor = Color.Red,
+//            contentColor = Color.White
+//        ),
+//        shape = RoundedCornerShape(50),
+//        modifier = Modifier
+//            .fillMaxWidth(0.7f)
+//            .height(50.dp)
+//    ) {
+//        Text(
+//            text,
+//            fontSize = 18.sp,
+//            fontWeight = FontWeight.Bold
+//        )
+//    }
+//}
